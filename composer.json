@@ -1,6 +1,6 @@
 {
   "name": "ez-php/event-store",
-  "version": "2.3.8",
+  "version": "2.3.9",
   "description": "Append-only event store with stream replay and projections for event sourcing.",
   "type": "library",
   "license": "MIT",
