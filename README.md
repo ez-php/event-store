@@ -17,6 +17,25 @@ lifecycle changes as events but only keeps a flat log — an event store adds
 per-aggregate streams, versioning, and optimistic concurrency on top of that
 idea.
 
+`AppendToStreamListener` is the glue for that composition: an `ez-php/events`
+listener that appends a dispatched event straight into a stream, so you don't
+call `append()` by hand in every listener. Requires `ez-php/events` (a soft
+dependency — declared in `require-dev` here, install it separately):
+
+```php
+use EzPhp\EventStore\AppendToStreamListener;
+use EzPhp\EventStore\DomainEvent;
+
+// OrderPlaced must implement both EzPhp\Events\EventInterface and DomainEvent
+$dispatcher->listen(OrderPlaced::class, new AppendToStreamListener(
+    $store,
+    fn (DomainEvent $event): string => 'order-' . $event->orderId(),
+));
+```
+
+Events dispatched that do *not* implement `DomainEvent` are silently ignored
+by the listener — register it only for event classes meant to be appended.
+
 ---
 
 ## Installation

@@ -270,6 +270,7 @@ src/
 ├── EventStoreException.php        — Base exception (extends RuntimeException; carve-out base per CLAUDE.md §Coding Standards)
 ├── ConcurrencyException.php       — Thrown by append() on a stale expectedVersion
 ├── EventStoreServiceProvider.php  — Binds EventStoreInterface to PdoEventStore via DatabaseInterface
+├── AppendToStreamListener.php     — ez-php/events ListenerInterface bridge; appends a dispatched DomainEvent to a resolved stream (soft dependency on ez-php/events — require-dev only)
 └── Projection/
     ├── ProjectorInterface.php     — project(StoredEvent): void contract for read-model builders
     └── Projectionist.php          — Replays a stream's events into one or more ProjectorInterface instances
@@ -279,6 +280,7 @@ tests/
 ├── StoredEventTest.php                     — StoredEvent constructor/property behavior
 ├── PdoEventStoreTest.php                   — append/load/getVersion, stream isolation, concurrency conflicts
 ├── EventStoreServiceProviderTest.php       — register() binding, resolution wiring to DatabaseInterface
+├── AppendToStreamListenerTest.php          — handle() appends DomainEvent+EventInterface fixtures to the resolved stream; ignores events that don't implement DomainEvent
 ├── Projection/
 │   └── ProjectionistTest.php               — replay() ordering, multi-projector fan-out, fromVersion checkpoint
 └── Support/
@@ -308,6 +310,16 @@ tests/
   store that silently no-ops on every append would corrupt an application's
   event history without any signal, which is a materially worse failure mode
   than audit logging silently being off.
+- **`AppendToStreamListener`** — the glue this module's README promised
+  ("composes naturally with `ez-php/audit`") but didn't ship. Implements
+  `EzPhp\Events\ListenerInterface`; requires the application's event class to
+  implement both `EventInterface` (dispatchable) and `DomainEvent`
+  (appendable) — events that only implement `EventInterface` are silently
+  ignored, mirroring `ez-php/audit`'s `AuditListener`. The application
+  registers it explicitly (`$dispatcher->listen(SomeEvent::class, new
+  AppendToStreamListener(...))`); it is not auto-wired by
+  `EventStoreServiceProvider`, since the stream-id resolution closure is
+  necessarily application-specific.
 
 ---
 
