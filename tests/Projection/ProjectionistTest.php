@@ -31,7 +31,7 @@ final class ProjectionistTest extends TestCase
         ]);
 
         $projectorA = new class () implements ProjectorInterface {
-            /** @var list<string> */
+            /** @var array<int, string> */
             public array $seen = [];
 
             public function project(StoredEvent $event): void
@@ -41,7 +41,7 @@ final class ProjectionistTest extends TestCase
         };
 
         $projectorB = new class () implements ProjectorInterface {
-            /** @var list<string> */
+            /** @var array<int, string> */
             public array $seen = [];
 
             public function project(StoredEvent $event): void
@@ -83,7 +83,7 @@ final class ProjectionistTest extends TestCase
         ]);
 
         $projector = new class () implements ProjectorInterface {
-            /** @var list<string> */
+            /** @var array<int, string> */
             public array $seen = [];
 
             public function project(StoredEvent $event): void
@@ -113,7 +113,7 @@ final class ProjectionistTest extends TestCase
         $store->append('order-1', [new RecordedEvent('order.placed.v1', ['total' => 10])]);
 
         $projector = new class () implements ProjectorInterface {
-            /** @var list<string> */
+            /** @var array<int, string> */
             public array $seen = [];
 
             public function project(StoredEvent $event): void
