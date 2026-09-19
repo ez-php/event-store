@@ -266,7 +266,9 @@ src/
 ├── DomainEvent.php                — Contract for an event appended to a stream (eventType(), payload())
 ├── StoredEvent.php                — Value object: an event as read back, with stream/version/occurredAt metadata
 ├── EventStoreInterface.php        — append(), load(), getVersion() contract
-├── PdoEventStore.php              — PDO-backed EventStoreInterface implementation (auto-creates its table)
+├── PdoEventStore.php              — PDO-backed EventStoreInterface implementation (auto-creates its table); applies upcasters on load()
+├── EventUpcasterInterface.php     — upcast(StoredEvent): StoredEvent — one read-time schema-evolution step
+├── UpcasterRegistry.php           — Ordered list of upcasters; bind it so the provider hands them to PdoEventStore
 ├── EventStoreException.php        — Base exception (extends RuntimeException; carve-out base per CLAUDE.md §Coding Standards)
 ├── ConcurrencyException.php       — Thrown by append() on a stale expectedVersion
 ├── EventStoreServiceProvider.php  — Binds EventStoreInterface to PdoEventStore via DatabaseInterface
@@ -339,10 +341,23 @@ tests/
   the PHP class that produced an old event has been renamed or removed
   (schema evolution). Callers that need typed reconstruction do it themselves
   from `eventType` + `payload` (e.g. a `match` in a projector).
-- **No event upcasting/versioning mechanism.** Out of scope for this first
-  pass — payload shape changes are the calling application's problem for now.
-  A dedicated `EventUpcaster` concept is a plausible future addition once a
-  real need shows up (YAGNI).
+- **Upcasting is read-time and stored rows are never rewritten.** An
+  `EventUpcasterInterface` implementation transforms one `StoredEvent` (old
+  event type / payload shape → current shape) and returns it unchanged when it
+  does not apply. `PdoEventStore` takes a `list<EventUpcasterInterface>` and
+  runs them in order over every event `load()` returns, each receiving the
+  previous one's output — so a v1 → v2 → v3 migration is two small upcasters,
+  not one big one. The log stays append-only; `EventStoreInterface` is
+  unchanged. `Projectionist::replay()` reads through `load()`, so it sees
+  upcasted events with no hook of its own (a second hook there would risk
+  upcasting twice). An upcaster should preserve stream id, version and
+  timestamp. Any other `EventStoreInterface` implementation must do its own
+  upcasting.
+- **`UpcasterRegistry` instead of tag-based discovery.** The provider resolves
+  upcasters from an explicitly bound `UpcasterRegistry` (`has()` reports only
+  explicit bindings). `Container::tagged()` was rejected because it lives in
+  `ez-php/framework`, which this package does not depend on. No binding means
+  no upcasting.
 - **No snapshotting.** Long streams are replayed in full on every `load()`.
   Acceptable for a first pass; a snapshot store would be a separate,
   composed concern, not a change to `EventStoreInterface`.

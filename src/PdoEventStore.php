@@ -41,8 +41,14 @@ final class PdoEventStore implements EventStoreInterface
 {
     private bool $tableChecked = false;
 
-    public function __construct(private readonly PDO $pdo)
-    {
+    /**
+     * @param PDO                         $pdo
+     * @param list<EventUpcasterInterface> $upcasters Applied in order to every event returned by load(); persisted rows are never modified.
+     */
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly array $upcasters = [],
+    ) {
     }
 
     /**
@@ -132,13 +138,19 @@ final class PdoEventStore implements EventStoreInterface
             /** @var mixed $decoded */
             $decoded = json_decode($row['payload'], true, 512, JSON_THROW_ON_ERROR);
 
-            $events[] = new StoredEvent(
+            $event = new StoredEvent(
                 streamId: $streamId,
                 version: (int) $row['version'],
                 eventType: $row['event_type'],
                 payload: is_array($decoded) ? $decoded : [],
                 occurredAt: new DateTimeImmutable($row['occurred_at']),
             );
+
+            foreach ($this->upcasters as $upcaster) {
+                $event = $upcaster->upcast($event);
+            }
+
+            $events[] = $event;
         }
 
         return $events;

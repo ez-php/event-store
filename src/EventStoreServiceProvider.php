@@ -27,13 +27,18 @@ final class EventStoreServiceProvider extends ServiceProvider
 {
     /**
      * Bind EventStoreInterface to the PDO-backed PdoEventStore.
+     * If an {@see UpcasterRegistry} is bound, its upcasters are applied on load().
      */
     public function register(): void
     {
         $this->app->bind(EventStoreInterface::class, function (ContainerInterface $app): EventStoreInterface {
             $db = $app->make(DatabaseInterface::class);
 
-            return new PdoEventStore($db->getPdo());
+            $upcasters = $app->has(UpcasterRegistry::class)
+                ? $app->make(UpcasterRegistry::class)->all()
+                : [];
+
+            return new PdoEventStore($db->getPdo(), $upcasters);
         });
     }
 }

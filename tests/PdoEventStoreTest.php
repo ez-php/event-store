@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests;
 
 use EzPhp\EventStore\ConcurrencyException;
+use EzPhp\EventStore\EventUpcasterInterface;
 use EzPhp\EventStore\PdoEventStore;
+use EzPhp\EventStore\StoredEvent;
 use PDO;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\UsesClass;
@@ -115,5 +117,78 @@ final class PdoEventStoreTest extends TestCase
         $this->store->append('order-1', [new RecordedEvent('order.placed')], expectedVersion: 0);
 
         self::assertSame(1, $this->store->getVersion('order-1'));
+    }
+
+    // ── upcasting ─────────────────────────────────────────────────────────────
+
+    private function renameFieldUpcaster(string $type, string $from, string $to): EventUpcasterInterface
+    {
+        return new class ($type, $from, $to) implements EventUpcasterInterface {
+            public function __construct(
+                private readonly string $type,
+                private readonly string $from,
+                private readonly string $to,
+            ) {
+            }
+
+            public function upcast(StoredEvent $event): StoredEvent
+            {
+                if ($event->eventType !== $this->type || !array_key_exists($this->from, $event->payload)) {
+                    return $event;
+                }
+
+                $payload = $event->payload;
+                $payload[$this->to] = $payload[$this->from];
+                unset($payload[$this->from]);
+
+                return new StoredEvent($event->streamId, $event->version, $event->eventType, $payload, $event->occurredAt);
+            }
+        };
+    }
+
+    public function test_load_without_upcasters_returns_events_unchanged(): void
+    {
+        $this->store->append('order-1', [new RecordedEvent('order.placed', ['total' => 10])]);
+
+        self::assertSame(['total' => 10], $this->store->load('order-1')[0]->payload);
+    }
+
+    public function test_load_applies_an_upcaster_to_old_payloads(): void
+    {
+        $store = new PdoEventStore($this->pdo, [$this->renameFieldUpcaster('order.placed', 'total', 'amount')]);
+        $store->append('order-1', [new RecordedEvent('order.placed', ['total' => 10])]);
+
+        $events = $store->load('order-1');
+
+        self::assertSame(['amount' => 10], $events[0]->payload);
+        self::assertSame(1, $events[0]->version);
+    }
+
+    public function test_load_applies_multiple_upcasters_in_order(): void
+    {
+        $store = new PdoEventStore($this->pdo, [
+            $this->renameFieldUpcaster('order.placed', 'total', 'amount'),
+            $this->renameFieldUpcaster('order.placed', 'amount', 'gross'),
+        ]);
+        $store->append('order-1', [new RecordedEvent('order.placed', ['total' => 10])]);
+
+        self::assertSame(['gross' => 10], $store->load('order-1')[0]->payload);
+    }
+
+    public function test_upcasters_leave_non_matching_events_alone(): void
+    {
+        $store = new PdoEventStore($this->pdo, [$this->renameFieldUpcaster('order.placed', 'total', 'amount')]);
+        $store->append('order-1', [new RecordedEvent('order.paid', ['total' => 10])]);
+
+        self::assertSame(['total' => 10], $store->load('order-1')[0]->payload);
+    }
+
+    public function test_upcasting_does_not_change_what_is_persisted(): void
+    {
+        $upcasting = new PdoEventStore($this->pdo, [$this->renameFieldUpcaster('order.placed', 'total', 'amount')]);
+        $upcasting->append('order-1', [new RecordedEvent('order.placed', ['total' => 10])]);
+        $upcasting->load('order-1');
+
+        self::assertSame(['total' => 10], $this->store->load('order-1')[0]->payload);
     }
 }

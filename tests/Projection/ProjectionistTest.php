@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Projection;
 
+use EzPhp\EventStore\EventUpcasterInterface;
 use EzPhp\EventStore\PdoEventStore;
 use EzPhp\EventStore\Projection\Projectionist;
 use EzPhp\EventStore\Projection\ProjectorInterface;
@@ -94,5 +95,35 @@ final class ProjectionistTest extends TestCase
         (new Projectionist($store))->replay('order-1', [$projector], fromVersion: 1);
 
         self::assertSame(['order.paid', 'order.shipped'], $projector->seen);
+    }
+
+    public function test_replay_projects_upcasted_events_when_the_store_has_upcasters(): void
+    {
+        $pdo = new PDO('sqlite::memory:');
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $upcaster = new class () implements EventUpcasterInterface {
+            public function upcast(StoredEvent $event): StoredEvent
+            {
+                return $event->eventType === 'order.placed.v1'
+                    ? new StoredEvent($event->streamId, $event->version, 'order.placed', $event->payload, $event->occurredAt)
+                    : $event;
+            }
+        };
+        $store = new PdoEventStore($pdo, [$upcaster]);
+        $store->append('order-1', [new RecordedEvent('order.placed.v1', ['total' => 10])]);
+
+        $projector = new class () implements ProjectorInterface {
+            /** @var list<string> */
+            public array $seen = [];
+
+            public function project(StoredEvent $event): void
+            {
+                $this->seen[] = $event->eventType;
+            }
+        };
+
+        (new Projectionist($store))->replay('order-1', [$projector]);
+
+        self::assertSame(['order.placed'], $projector->seen);
     }
 }

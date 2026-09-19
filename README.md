@@ -110,6 +110,37 @@ $store->append($streamId, $newEvents, expectedVersion: $version);
 $events = $store->load("order-{$orderId}"); // list<StoredEvent>, in version order
 ```
 
+### Evolving event schemas (upcasting)
+
+Stored events are never rewritten. When an event's shape changes, add an upcaster that
+translates old events at read time:
+
+```php
+use EzPhp\EventStore\EventUpcasterInterface;
+use EzPhp\EventStore\StoredEvent;
+
+final class OrderPlacedTotalToAmount implements EventUpcasterInterface
+{
+    public function upcast(StoredEvent $event): StoredEvent
+    {
+        if ($event->eventType !== 'order.placed' || !isset($event->payload['total'])) {
+            return $event; // not applicable
+        }
+
+        $payload = ['amount' => $event->payload['total']] + $event->payload;
+        unset($payload['total']);
+
+        return new StoredEvent($event->streamId, $event->version, $event->eventType, $payload, $event->occurredAt);
+    }
+}
+
+$store = new PdoEventStore($pdo, [new OrderPlacedTotalToAmount(), new OrderPlacedAddCurrency()]);
+```
+
+Upcasters run in the given order, each receiving the previous one's output, so multi-version
+migrations are a chain of small steps. Projections replay through `load()` and see upcasted events.
+With the service provider, bind `new UpcasterRegistry([...])` in the container instead.
+
 ### Projections
 
 ```php
