@@ -22,6 +22,11 @@ use EzPhp\EventStore\EventStoreInterface;
  */
 final class Projectionist
 {
+    /**
+     * Projectionist Constructor
+     *
+     * @param EventStoreInterface $store
+     */
     public function __construct(private readonly EventStoreInterface $store)
     {
     }
