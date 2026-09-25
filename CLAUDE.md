@@ -241,7 +241,7 @@ Only set a port for services the module actually uses. Modules without external 
 
 > The `MEILISEARCH_PORT` column is the **host** port. Inside a Compose network the service is always reachable at `http://meilisearch:7700` regardless of the host mapping — only publish-side ports need to be unique.
 
-> The "Redis host port" column is likewise the **host**-published port. `ez-php/cache`, `ez-php/queue`, and `ez-php/rate-limiter` map it through a separate `REDIS_HOST_PORT` env var in `docker-compose.yml`, keeping `REDIS_PORT` fixed at `6379` for in-container connections (the app container always reaches Redis at `redis:6379` over the Compose network, regardless of the host mapping) — the root project and the `ez-php/` application template are the two exceptions, since both have no host/container split and use `REDIS_PORT` for both (the template's other in-container Redis settings — `CACHE_REDIS_PORT`, `QUEUE_REDIS_PORT`, `RATE_LIMITER_REDIS_PORT` — stay fixed at `6379` regardless, same as every other module).
+> The "Redis host port" column is likewise the **host**-published port. `ez-php/cache`, `ez-php/queue`, and `ez-php/rate-limiter` map it through a separate `REDIS_HOST_PORT` env var in `docker-compose.yml`, keeping `REDIS_PORT` fixed at `6379` for in-container connections (the app container always reaches Redis at `redis:6379` over the Compose network, regardless of the host mapping) — the root project and the `ez-php/` application template are the two exceptions, since both have no host/container split and use `REDIS_PORT` for both (the template's other in-container Redis settings — `CACHE_REDIS_PORT`, `QUEUE_REDIS_PORT`, `RATE_LIMITER_REDIS_PORT`, `HEALTH_REDIS_PORT` — stay fixed at `6379` regardless, same as every other module).
 
 > This table tracks only MySQL, Redis, and Meilisearch ports — the three services shared across multiple modules where a collision is otherwise easy to introduce. Mailpit is the one other service with published host ports: SMTP `1025` and web UI `8025`. `ez-php/mail` maps them through `MAILPIT_SMTP_HOST_PORT`/`MAILPIT_API_HOST_PORT` in `modules/mail/docker-compose.yml` (mirroring the `*_HOST_PORT` pattern above, documented in `modules/mail/.env.example`); the root project and the `ez-php/` template each run their own Mailpit on the same defaults (`MAIL_PORT`/`MAIL_WEB_PORT`), so **these three stacks cannot run at the same time** without overriding those variables. It isn't a table column because no module beyond those three runs Mailpit — but a new module adding its own single-use service's ports should likewise parameterize them and document the defaults in its own `.env.example` rather than adding a column here.
 
@@ -275,7 +275,7 @@ src/
 ├── EventUpcasterInterface.php     — upcast(StoredEvent): StoredEvent — one read-time schema-evolution step
 ├── UpcasterRegistry.php           — Ordered list of upcasters; bind it so the provider hands them to PdoEventStore
 ├── EventStoreException.php        — Base exception (extends RuntimeException; carve-out base per CLAUDE.md §Coding Standards)
-├── ConcurrencyException.php       — Thrown by append() on a stale expectedVersion
+├── ConcurrencyException.php       — Thrown by append() on a stale expectedVersion or a lost append race
 ├── EventStoreServiceProvider.php  — Binds EventStoreInterface to PdoEventStore via DatabaseInterface
 ├── AppendToStreamListener.php     — ez-php/events ListenerInterface bridge; appends a dispatched DomainEvent to a resolved stream (soft dependency on ez-php/events — require-dev only)
 └── Projection/
@@ -292,6 +292,7 @@ tests/
 │   └── ProjectionistTest.php               — replay() ordering, multi-projector fan-out, fromVersion checkpoint
 └── Support/
     ├── RecordedEvent.php                   — Minimal DomainEvent stub used across tests
+    ├── EventStoreRacingPdo.php             — SQLite PDO that inserts a competing row before the store's INSERT (append race)
     └── EventStoreFakeContainer.php         — Minimal ContainerInterface stub for EventStoreServiceProviderTest
 ```
 
@@ -304,7 +305,9 @@ tests/
   optional `expectedVersion`, and inserts inside the same transaction, relying
   on a `UNIQUE (stream_id, version)` constraint as a last line of defence
   against a genuine race between two transactions that both pass the version
-  check. Follows the same `ensureTable()` auto-DDL pattern as
+  check. The loser's unique violation (SQLSTATE 23000) is rethrown as
+  `ConcurrencyException` (driver error as `previous`, `actualVersion` at least
+  the colliding version), so callers have one exception to retry on. Follows the same `ensureTable()` auto-DDL pattern as
   `ez-php/audit`'s `AuditLogger` — SQLite DDL for tests, MySQL DDL for
   production, created lazily and cached per-instance via a boolean flag.
 - **`Projectionist`** — the only mechanism for turning a stored stream into

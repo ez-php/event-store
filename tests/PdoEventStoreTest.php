@@ -11,6 +11,7 @@ use EzPhp\EventStore\StoredEvent;
 use PDO;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\UsesClass;
+use Tests\Support\EventStoreRacingPdo;
 use Tests\Support\RecordedEvent;
 
 #[CoversClass(PdoEventStore::class)]
@@ -110,6 +111,38 @@ final class PdoEventStoreTest extends TestCase
 
         // The failed append must not have written anything.
         self::assertSame(1, $this->store->getVersion('order-1'));
+    }
+
+    public function test_losing_a_concurrent_append_race_throws_concurrency_exception(): void
+    {
+        $pdo = new EventStoreRacingPdo();
+        $store = new PdoEventStore($pdo);
+        $store->append('order-1', [new RecordedEvent('order.placed')]);
+
+        // Another writer that also read version 1 appends version 2 first.
+        $pdo->raceOnNextInsert('order-1', 2);
+
+        try {
+            $store->append('order-1', [new RecordedEvent('order.paid')], expectedVersion: 1);
+            self::fail('Expected ConcurrencyException was not thrown.');
+        } catch (ConcurrencyException $e) {
+            self::assertSame('order-1', $e->streamId);
+            self::assertSame(1, $e->expectedVersion);
+            self::assertSame(2, $e->actualVersion);
+            self::assertInstanceOf(\PDOException::class, $e->getPrevious());
+        }
+    }
+
+    public function test_race_without_expected_version_also_throws_concurrency_exception(): void
+    {
+        $pdo = new EventStoreRacingPdo();
+        $store = new PdoEventStore($pdo);
+        $store->append('order-1', [new RecordedEvent('order.placed')]);
+        $pdo->raceOnNextInsert('order-1', 2);
+
+        $this->expectException(ConcurrencyException::class);
+
+        $store->append('order-1', [new RecordedEvent('order.paid')]);
     }
 
     public function test_append_against_a_new_stream_with_expected_version_zero_succeeds(): void

@@ -94,7 +94,10 @@ $store->append("order-{$orderId}", [
 
 Pass `expectedVersion` to guard against two writers racing on the same
 stream — the append fails with `ConcurrencyException` if the stream has moved
-on since the caller last read it:
+on since the caller last read it. Two appends that read the same version at the
+same moment also end in a `ConcurrencyException` for the loser (the
+`UNIQUE (stream_id, version)` constraint catches it), so retrying on that one
+exception covers both cases:
 
 ```php
 $version = $store->getVersion($streamId);

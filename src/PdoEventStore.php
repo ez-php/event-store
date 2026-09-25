@@ -6,6 +6,7 @@ namespace EzPhp\EventStore;
 
 use DateTimeImmutable;
 use PDO;
+use PDOException;
 use Throwable;
 
 /**
@@ -22,9 +23,11 @@ use Throwable;
  *       event_type  VARCHAR(255)    NOT NULL,
  *       payload     JSON            NOT NULL,
  *       occurred_at DATETIME(6)     NOT NULL,
- *       UNIQUE      uniq_stream_version (stream_id, version),
- *       INDEX       idx_stream (stream_id)
+ *       UNIQUE      uniq_stream_version (stream_id, version)
  *   );
+ *
+ * The unique (stream_id, version) key also serves every stream_id lookup
+ * (leftmost prefix), so no separate stream_id index is needed.
  *
  * ensureTable() auto-creates the table when it does not yet exist, adapting the
  * DDL to the PDO driver (SQLite for tests, MySQL for production). In production,
@@ -68,6 +71,9 @@ final class PdoEventStore implements EventStoreInterface
             $this->pdo->beginTransaction();
         }
 
+        $currentVersion = 0;
+        $version = 0;
+
         try {
             $currentVersion = $this->getVersion($streamId);
 
@@ -103,6 +109,24 @@ final class PdoEventStore implements EventStoreInterface
             }
 
             throw $e;
+        } catch (PDOException $e) {
+            if ($ownsTransaction) {
+                $this->pdo->rollBack();
+            }
+
+            // Two writers read the same current version; the loser's INSERT hits
+            // UNIQUE (stream_id, version). That is an optimistic-concurrency conflict,
+            // so surface it as one — callers retry on ConcurrencyException.
+            if (self::isUniqueViolation($e)) {
+                throw new ConcurrencyException(
+                    $streamId,
+                    $expectedVersion ?? $currentVersion,
+                    max($this->versionAfterConflict($streamId), $version),
+                    $e,
+                );
+            }
+
+            throw new EventStoreException("Failed to append to stream \"{$streamId}\": {$e->getMessage()}", 0, $e);
         } catch (Throwable $e) {
             if ($ownsTransaction) {
                 $this->pdo->rollBack();
@@ -177,6 +201,39 @@ final class PdoEventStore implements EventStoreInterface
     }
 
     /**
+     * Whether a PDO error is a unique/integrity-constraint violation (SQLSTATE 23000).
+     *
+     * @param PDOException $e
+     *
+     * @return bool
+     */
+    private static function isUniqueViolation(PDOException $e): bool
+    {
+        $sqlState = $e->errorInfo[0] ?? $e->getCode();
+
+        return (string) $sqlState === '23000';
+    }
+
+    /**
+     * Re-read a stream's version after a lost append race, for the exception message.
+     *
+     * The caller also takes the colliding version as a lower bound, because when the
+     * caller owns an enclosing transaction the competing row may not be visible yet.
+     *
+     * @param string $streamId
+     *
+     * @return int
+     */
+    private function versionAfterConflict(string $streamId): int
+    {
+        try {
+            return $this->getVersion($streamId);
+        } catch (Throwable) {
+            return 0;
+        }
+    }
+
+    /**
      * Create the event_store_events table if it does not yet exist.
      * Runs at most once per PdoEventStore instance. Adapts DDL to the PDO driver.
      */
@@ -203,9 +260,6 @@ final class PdoEventStore implements EventStoreInterface
                         UNIQUE (stream_id, version)
                     )'
                 );
-                $this->pdo->exec(
-                    'CREATE INDEX IF NOT EXISTS idx_event_store_stream ON event_store_events (stream_id)'
-                );
             } else {
                 $this->pdo->exec(
                     'CREATE TABLE IF NOT EXISTS event_store_events (
@@ -215,8 +269,7 @@ final class PdoEventStore implements EventStoreInterface
                         event_type  VARCHAR(255)    NOT NULL,
                         payload     JSON            NOT NULL,
                         occurred_at DATETIME(6)     NOT NULL,
-                        UNIQUE      uniq_stream_version (stream_id, version),
-                        INDEX       idx_stream (stream_id)
+                        UNIQUE      uniq_stream_version (stream_id, version)
                     )'
                 );
             }
