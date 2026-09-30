@@ -294,6 +294,7 @@ tests/
 ├── TestCase.php                            — Base PHPUnit test case (trivial passthrough)
 ├── StoredEventTest.php                     — StoredEvent constructor/property behavior
 ├── PdoEventStoreTest.php                   — append/load/getVersion, stream isolation, concurrency conflicts
+├── PdoEventStoreMysqlTest.php              — the MySQL DDL branch (JSON/DATETIME(6)/unique key) and round-trip; skipped without DB_HOST
 ├── EventStoreServiceProviderTest.php       — register() binding, resolution wiring to DatabaseInterface
 ├── AppendToStreamListenerTest.php          — handle() appends DomainEvent+EventInterface fixtures to the resolved stream; ignores events that don't implement DomainEvent
 ├── Projection/
@@ -374,6 +375,10 @@ tests/
   explicit bindings). `Container::tagged()` was rejected because it lives in
   `ez-php/framework`, which this package does not depend on. No binding means
   no upcasting.
+- **Payload key order is backend-specific.** MySQL stores `payload` in a
+  `JSON` column, which normalises object key order; SQLite keeps the text as
+  written. `load()` returns the same keys and values on both, but code must not
+  depend on the order of keys in a payload.
 - **No snapshotting.** Long streams are replayed in full on every `load()`.
   Acceptable for a first pass; a snapshot store would be a separate,
   composed concern, not a change to `EventStoreInterface`.
@@ -382,11 +387,14 @@ tests/
 
 ## Testing Approach
 
-- Tests run against `PDO('sqlite::memory:')`, exactly like
-  `ez-php/audit`'s `AuditLoggerTest` — no MySQL container needed for the unit
-  suite. `docker-compose.yml` still provisions MySQL (`ez-php-event-store-db`,
-  host port `3311`) for manual/integration use against the production DDL
-  path in `ensureTable()`.
+- Most tests run against `PDO('sqlite::memory:')`, exactly like
+  `ez-php/audit`'s `AuditLoggerTest`. `PdoEventStoreMysqlTest` covers the
+  production DDL branch of `ensureTable()` against MySQL: it runs when
+  `DB_HOST` is set (the module's `docker-compose.yml` MySQL on host port
+  `3311`, the root stack's `db`, or the MySQL service in the module CI job)
+  and is skipped otherwise. It uses `DB_TESTING_DATABASE` (falling back to
+  `DB_DATABASE`) and drops `event_store_events` around each test, since MySQL
+  DDL commits implicitly.
 - Test classes live in the shared `Tests\` namespace but must be uniquely named
   across the whole monorepo — the root `phpunit.xml` loads every package in one
   process, so a duplicate name is a fatal error, not a test failure. Prefix with
