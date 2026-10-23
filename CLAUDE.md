@@ -244,7 +244,8 @@ After scaffolding:
 | `ez-php/scheduler` | — | 6386 (`REDIS_HOST_PORT`) | — |
 | `ez-php/session` | — | 6387 (`REDIS_HOST_PORT`) | — |
 | `ez-php/metrics` | — | 6388 (`REDIS_HOST_PORT`) | — |
-| **next free** | **3312** | **6389** | **7702** |
+| `ez-php/event-store-snapshots` | 3312 | — | — |
+| **next free** | **3313** | **6389** | **7702** |
 
 Only set a port for services the module actually uses. Modules without external services need no port config.
 
@@ -380,9 +381,10 @@ tests/
   `JSON` column, which normalises object key order; SQLite keeps the text as
   written. `load()` returns the same keys and values on both, but code must not
   depend on the order of keys in a payload.
-- **No snapshotting.** Long streams are replayed in full on every `load()`.
-  Acceptable for a first pass; a snapshot store would be a separate,
-  composed concern, not a change to `EventStoreInterface`.
+- **No snapshotting here.** `load()` always replays from `$fromVersion`.
+  Snapshots are the separate, composed `ez-php/event-store-snapshots` module
+  (its `SnapshottingLoader` calls `load($streamId, $snapshotVersion)`), not a
+  change to `EventStoreInterface`.
 
 ---
 
@@ -421,3 +423,4 @@ tests/
 | Async job execution / queued side effects triggered by an event | `ez-php/queue` |
 | Real-time push of events to connected clients | `ez-php/broadcast` |
 | Multi-channel user notifications (mail, database, push) | `ez-php/notification` |
+| Snapshots of folded stream state | `ez-php/event-store-snapshots` |
