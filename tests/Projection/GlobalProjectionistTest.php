@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Projection;
 
+use DateTimeImmutable;
 use EzPhp\EventStore\EventStoreException;
+use EzPhp\EventStore\GlobalEventReaderInterface;
 use EzPhp\EventStore\PdoEventStore;
 use EzPhp\EventStore\PositionedEvent;
 use EzPhp\EventStore\Projection\GlobalProjectionist;
@@ -140,5 +142,50 @@ final class GlobalProjectionistTest extends TestCase
         $this->expectException(EventStoreException::class);
 
         new GlobalProjectionist($this->store, new InMemoryCheckpointStore(), 0);
+    }
+
+    public function test_an_overlap_picks_up_an_event_that_committed_after_a_later_one(): void
+    {
+        // Position 3 is inserted before 4 but commits after it: the first run only sees 1, 2, 4.
+        $reader = new class () implements GlobalEventReaderInterface {
+            /** @var list<int> */
+            public array $visible = [1, 2, 4];
+
+            public function readAll(int $fromPosition = 0, int $limit = 500): array
+            {
+                $positions = array_values(array_filter($this->visible, static fn (int $p): bool => $p > $fromPosition));
+                sort($positions);
+
+                return array_map(
+                    static fn (int $p): PositionedEvent => new PositionedEvent(
+                        $p,
+                        new StoredEvent('s', $p, 'e', ['i' => $p], new DateTimeImmutable()),
+                    ),
+                    array_slice($positions, 0, $limit),
+                );
+            }
+        };
+
+        $withoutOverlap = new InMemoryCheckpointStore();
+        $withOverlap = new InMemoryCheckpointStore();
+        $plain = $this->recorder();
+        $overlapping = $this->recorder();
+
+        (new GlobalProjectionist($reader, $withoutOverlap))->run('p', [$plain]);
+        (new GlobalProjectionist($reader, $withOverlap, overlap: 2))->run('p', [$overlapping]);
+        $reader->visible = [1, 2, 3, 4];
+
+        (new GlobalProjectionist($reader, $withoutOverlap))->run('p', [$plain]);
+        (new GlobalProjectionist($reader, $withOverlap, batchSize: 1, overlap: 2))->run('p', [$overlapping]);
+
+        $this->assertSame([1, 2, 4], $plain->seen);
+        $this->assertSame([1, 2, 4, 3, 4], $overlapping->seen);
+        $this->assertSame(4, $withOverlap->get('p'));
+    }
+
+    public function test_a_negative_overlap_is_rejected(): void
+    {
+        $this->expectException(EventStoreException::class);
+        new GlobalProjectionist($this->store, new InMemoryCheckpointStore(), overlap: -1);
     }
 }

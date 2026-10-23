@@ -19,6 +19,14 @@ use EzPhp\EventStore\GlobalEventReaderInterface;
  * throws mid-page leaves the checkpoint at the previous page, and the next run
  * repeats that page. Projectors should therefore be idempotent (upsert by id).
  *
+ * Positions are assigned at insert, not at commit, so with concurrent writers a
+ * checkpoint can move past an event whose transaction commits later — without
+ * an overlap that event is never projected. `$overlap` makes every run start
+ * that many positions before the checkpoint: late commits inside the window
+ * are picked up, at the price of re-delivering the window's events each run
+ * (idempotent projectors again). Size it to the positions your writers can
+ * insert while one transaction is still open; 0 (default) suits a single writer.
+ *
  * @package EzPhp\EventStore\Projection
  */
 final readonly class GlobalProjectionist
@@ -27,16 +35,22 @@ final readonly class GlobalProjectionist
      * @param GlobalEventReaderInterface $reader
      * @param CheckpointStoreInterface   $checkpoints
      * @param int                        $batchSize   Events per readAll() page and per checkpoint save.
+     * @param int                        $overlap     Positions re-read before the checkpoint at the start of each run.
      *
-     * @throws EventStoreException When the batch size is below 1.
+     * @throws EventStoreException When the batch size is below 1 or the overlap negative.
      */
     public function __construct(
         private GlobalEventReaderInterface $reader,
         private CheckpointStoreInterface $checkpoints,
         private int $batchSize = 500,
+        private int $overlap = 0,
     ) {
         if ($batchSize < 1) {
             throw new EventStoreException('GlobalProjectionist needs a batch size of at least 1.');
+        }
+
+        if ($overlap < 0) {
+            throw new EventStoreException('GlobalProjectionist needs an overlap of at least 0.');
         }
     }
 
@@ -47,11 +61,12 @@ final readonly class GlobalProjectionist
      * @param list<ProjectorInterface> $projectors Called in order for every event.
      * @param int|null                 $maxEvents  Stop after about this many events (whole pages); null = until caught up.
      *
-     * @return int Number of events projected in this run.
+     * @return int Number of events projected in this run (re-delivered overlap events included).
      */
     public function run(string $projection, array $projectors, ?int $maxEvents = null): int
     {
-        $position = $this->checkpoints->get($projection);
+        $checkpoint = $this->checkpoints->get($projection);
+        $position = max(0, $checkpoint - $this->overlap);
         $processed = 0;
 
         while ($maxEvents === null || $processed < $maxEvents) {
@@ -70,7 +85,8 @@ final readonly class GlobalProjectionist
                 $processed++;
             }
 
-            $this->checkpoints->save($projection, $position);
+            // A page inside the overlap window must not move the checkpoint backwards.
+            $this->checkpoints->save($projection, max($position, $checkpoint));
 
             if (count($page) < $this->batchSize) {
                 break;

@@ -293,7 +293,7 @@ src/
 └── Projection/
     ├── ProjectorInterface.php     — project(StoredEvent): void contract for read-model builders
     ├── Projectionist.php          — Replays a stream's events into one or more ProjectorInterface instances
-    ├── GlobalProjectionist.php    — run(name, projectors): every stream in global order from the projection's checkpoint, paged, at-least-once
+    ├── GlobalProjectionist.php    — run(name, projectors): every stream in global order from the projection's checkpoint, paged, at-least-once; optional overlap re-reads positions before it
     ├── CheckpointStoreInterface.php — get()/save() of the last processed global position per projection name
     ├── InMemoryCheckpointStore.php — process-local checkpoints (tests, rebuild-on-start projections)
     └── PdoCheckpointStore.php     — event_store_checkpoints table (auto-DDL), driver-aware upsert
@@ -308,7 +308,7 @@ tests/
 ├── AppendToStreamListenerTest.php          — handle() appends DomainEvent+EventInterface fixtures to the resolved stream; ignores events that don't implement DomainEvent
 ├── Projection/
 │   ├── ProjectionistTest.php               — replay() ordering, multi-projector fan-out, fromVersion checkpoint
-│   └── GlobalProjectionistTest.php         — resume from checkpoint, paging/maxEvents, independent projections, at-least-once on failure, reset(), both checkpoint stores
+│   └── GlobalProjectionistTest.php         — resume from checkpoint, paging/maxEvents, independent projections, at-least-once on failure, reset(), both checkpoint stores, overlap catches a late commit without moving the checkpoint back
 └── Support/
     ├── RecordedEvent.php                   — Minimal DomainEvent stub used across tests
     ├── EventStoreRacingPdo.php             — SQLite PDO that inserts a competing row before the store's INSERT (append race)
@@ -399,8 +399,12 @@ tests/
   cannot order globally simply does not implement `GlobalEventReaderInterface`. The provider binds
   the interface to the bound `EventStoreInterface` and fails loudly when that store lacks it.
 - **Positions are assigned at insert, not at commit** — under concurrent appends a reader can see
-  id 11 while the transaction holding id 10 is still open; a checkpoint past 11 then skips 10. The
-  interface docblock says so. Single-writer appends avoid it; otherwise re-read a small overlap.
+  id 11 while the transaction holding id 10 is still open; a checkpoint past 11 then skips 10 for good.
+  The interface docblock says so. Single-writer appends avoid it; otherwise `GlobalProjectionist`'s
+  `overlap` (positions re-read before the checkpoint at the start of each run) catches late commits
+  inside that window, re-delivering its events every run. A page inside the window never moves the
+  checkpoint backwards. Gap detection with a grace period was not chosen: auto-increment ids also
+  have permanent gaps (rolled-back inserts), so it needs timestamps and per-gap state.
 - **Checkpoint per page, so delivery is at-least-once** — a projector that throws leaves the
   checkpoint at the last completed page and the next `run()` repeats the page. Projectors must be
   idempotent (upsert by id). Checkpointing per event would cost a write per event for little gain.

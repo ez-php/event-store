@@ -184,7 +184,14 @@ $projectionist->run('order-list', [new OrderListProjector()]);   // from the las
 $projectionist->reset('order-list');                               // rebuild from the first event
 ```
 
-`PdoEventStore` implements `GlobalEventReaderInterface::readAll($fromPosition, $limit)`; the service provider binds it and `CheckpointStoreInterface` (`PdoCheckpointStore`, table `event_store_checkpoints`). The checkpoint is saved after every page, so delivery is at-least-once — make projectors idempotent. Positions come from the auto-increment id and are assigned at insert time: with concurrent writers a reader can briefly see a later event before an earlier one commits.
+`PdoEventStore` implements `GlobalEventReaderInterface::readAll($fromPosition, $limit)`; the service provider binds it and `CheckpointStoreInterface` (`PdoCheckpointStore`, table `event_store_checkpoints`). The checkpoint is saved after every page, so delivery is at-least-once — make projectors idempotent. Positions come from the auto-increment id and are assigned at insert time, not at commit. With concurrent writers a run can see position 11 while the transaction holding 10 is still open; the checkpoint then moves past 10, and **that event is never projected** unless you configure an overlap:
+
+```php
+// Every run re-reads the 50 positions before the checkpoint, catching late commits in that window.
+$projectionist = new GlobalProjectionist($store, new PdoCheckpointStore($pdo), batchSize: 500, overlap: 50);
+```
+
+The overlap's events are delivered again on every run, so projectors must be idempotent. Size it to how many positions your writers can insert while one transaction is still open; with a single writer leave it at 0 (the default).
 
 ---
 

@@ -15,7 +15,7 @@ namespace EzPhp\EventStore;
  * order they are assigned at insert, not at commit: under concurrent appends a
  * reader can see position 11 before a transaction holding 10 has committed, and a
  * checkpoint past 11 then skips 10. Run appends through one writer, or let
- * projections re-read a short overlap, where that matters.
+ * projections re-read a short overlap (GlobalProjectionist's `overlap`), where that matters.
  *
  * @package EzPhp\EventStore
  */
