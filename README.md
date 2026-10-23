@@ -170,6 +170,22 @@ persist checkpoints, or subscribe to new events as they are appended. Pass
 `fromVersion` to resume a projector from wherever it last left off; owning
 that checkpoint (and when to trigger a replay) is left to the caller.
 
+### Cross-stream projections
+
+A read model over many aggregates (all orders) follows the events of every stream in global order:
+
+```php
+use EzPhp\EventStore\Projection\GlobalProjectionist;
+use EzPhp\EventStore\Projection\PdoCheckpointStore;
+
+$projectionist = new GlobalProjectionist($store, new PdoCheckpointStore($pdo), batchSize: 500);
+
+$projectionist->run('order-list', [new OrderListProjector()]);   // from the last checkpoint
+$projectionist->reset('order-list');                               // rebuild from the first event
+```
+
+`PdoEventStore` implements `GlobalEventReaderInterface::readAll($fromPosition, $limit)`; the service provider binds it and `CheckpointStoreInterface` (`PdoCheckpointStore`, table `event_store_checkpoints`). The checkpoint is saved after every page, so delivery is at-least-once — make projectors idempotent. Positions come from the auto-increment id and are assigned at insert time: with concurrent writers a reader can briefly see a later event before an earlier one commits.
+
 ---
 
 ## Storage

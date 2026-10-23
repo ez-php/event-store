@@ -7,12 +7,16 @@ namespace EzPhp\EventStore;
 use EzPhp\Contracts\ContainerInterface;
 use EzPhp\Contracts\DatabaseInterface;
 use EzPhp\Contracts\ServiceProvider;
+use EzPhp\EventStore\Projection\CheckpointStoreInterface;
+use EzPhp\EventStore\Projection\PdoCheckpointStore;
 
 /**
  * Class EventStoreServiceProvider
  *
  * Binds {@see EventStoreInterface} to a {@see PdoEventStore} backed by the
- * application's {@see DatabaseInterface} connection.
+ * application's {@see DatabaseInterface} connection; {@see GlobalEventReaderInterface}
+ * to the same store and {@see Projection\CheckpointStoreInterface} to a
+ * {@see Projection\PdoCheckpointStore} on that connection.
  *
  * register() resolves DatabaseInterface lazily inside the binding closure
  * (per the "register() must not use other services" rule) rather than eagerly
@@ -40,5 +44,24 @@ final class EventStoreServiceProvider extends ServiceProvider
 
             return new PdoEventStore($db->getPdo(), $upcasters);
         });
+
+        // The same store reads globally (PdoEventStore implements both contracts).
+        $this->app->bind(
+            GlobalEventReaderInterface::class,
+            function (ContainerInterface $app): GlobalEventReaderInterface {
+                $store = $app->make(EventStoreInterface::class);
+
+                if (!$store instanceof GlobalEventReaderInterface) {
+                    throw new EventStoreException(sprintf('%s does not implement %s; bind GlobalEventReaderInterface yourself.', $store::class, GlobalEventReaderInterface::class));
+                }
+
+                return $store;
+            },
+        );
+
+        $this->app->bind(
+            CheckpointStoreInterface::class,
+            fn (ContainerInterface $app): CheckpointStoreInterface => new PdoCheckpointStore($app->make(DatabaseInterface::class)->getPdo()),
+        );
     }
 }

@@ -38,15 +38,18 @@ use Throwable;
  * `uniq_stream_version` unique index to reject a genuine race (two transactions
  * both passing the version check) as a last line of defence.
  *
+ * readAll() (GlobalEventReaderInterface) pages through every stream in `id`
+ * order — the auto-increment primary key is the global position.
+ *
  * @package EzPhp\EventStore
  */
-final class PdoEventStore implements EventStoreInterface
+final class PdoEventStore implements EventStoreInterface, GlobalEventReaderInterface
 {
     private bool $tableChecked = false;
 
     /**
      * @param PDO                         $pdo
-     * @param list<EventUpcasterInterface> $upcasters Applied in order to every event returned by load(); persisted rows are never modified.
+     * @param list<EventUpcasterInterface> $upcasters Applied in order to every event returned by load()/readAll(); persisted rows are never modified.
      */
     public function __construct(
         private readonly PDO $pdo,
@@ -159,25 +162,72 @@ final class PdoEventStore implements EventStoreInterface
 
         /** @var array{version: int|string, event_type: string, payload: string, occurred_at: string} $row */
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            /** @var mixed $decoded */
-            $decoded = json_decode($row['payload'], true, 512, JSON_THROW_ON_ERROR);
-
-            $event = new StoredEvent(
-                streamId: $streamId,
-                version: (int) $row['version'],
-                eventType: $row['event_type'],
-                payload: is_array($decoded) ? $decoded : [],
-                occurredAt: new DateTimeImmutable($row['occurred_at']),
-            );
-
-            foreach ($this->upcasters as $upcaster) {
-                $event = $upcaster->upcast($event);
-            }
-
-            $events[] = $event;
+            $events[] = $this->hydrate($streamId, $row);
         }
 
         return $events;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function readAll(int $fromPosition = 0, int $limit = 500): array
+    {
+        if ($limit < 1) {
+            throw new EventStoreException('readAll() needs a limit of at least 1.');
+        }
+
+        $this->ensureTable();
+
+        try {
+            $stmt = $this->pdo->prepare(
+                'SELECT id, stream_id, version, event_type, payload, occurred_at
+                 FROM event_store_events
+                 WHERE id > ?
+                 ORDER BY id ASC
+                 LIMIT ' . $limit
+            );
+            $stmt->execute([$fromPosition]);
+        } catch (Throwable $e) {
+            throw new EventStoreException("Failed to read events after position {$fromPosition}: {$e->getMessage()}", 0, $e);
+        }
+
+        $events = [];
+
+        /** @var array{id: int|string, stream_id: string, version: int|string, event_type: string, payload: string, occurred_at: string} $row */
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $events[] = new PositionedEvent((int) $row['id'], $this->hydrate($row['stream_id'], $row));
+        }
+
+        return $events;
+    }
+
+    /**
+     * Build a StoredEvent from a row and run it through the upcasters.
+     *
+     * @param string                                                                         $streamId
+     * @param array{version: int|string, event_type: string, payload: string, occurred_at: string} $row
+     *
+     * @return StoredEvent
+     */
+    private function hydrate(string $streamId, array $row): StoredEvent
+    {
+        /** @var mixed $decoded */
+        $decoded = json_decode($row['payload'], true, 512, JSON_THROW_ON_ERROR);
+
+        $event = new StoredEvent(
+            streamId: $streamId,
+            version: (int) $row['version'],
+            eventType: $row['event_type'],
+            payload: is_array($decoded) ? $decoded : [],
+            occurredAt: new DateTimeImmutable($row['occurred_at']),
+        );
+
+        foreach ($this->upcasters as $upcaster) {
+            $event = $upcaster->upcast($event);
+        }
+
+        return $event;
     }
 
     /**

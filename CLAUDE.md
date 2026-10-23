@@ -281,26 +281,34 @@ src/
 ├── DomainEvent.php                — Contract for an event appended to a stream (eventType(), payload())
 ├── StoredEvent.php                — Value object: an event as read back, with stream/version/occurredAt metadata
 ├── EventStoreInterface.php        — append(), load(), getVersion() contract
-├── PdoEventStore.php              — PDO-backed EventStoreInterface implementation (auto-creates its table); applies upcasters on load()
+├── GlobalEventReaderInterface.php — readAll(fromPosition, limit): events of every stream in global (id) order; separate from EventStoreInterface
+├── PositionedEvent.php            — readonly (position, StoredEvent) returned by readAll()
+├── PdoEventStore.php              — PDO-backed EventStoreInterface + GlobalEventReaderInterface (auto-creates its table); applies upcasters on load()/readAll()
 ├── EventUpcasterInterface.php     — upcast(StoredEvent): StoredEvent — one read-time schema-evolution step
 ├── UpcasterRegistry.php           — Ordered list of upcasters; bind it so the provider hands them to PdoEventStore
 ├── EventStoreException.php        — Base exception (extends RuntimeException; carve-out base per CLAUDE.md §Coding Standards)
 ├── ConcurrencyException.php       — Thrown by append() on a stale expectedVersion or a lost append race
-├── EventStoreServiceProvider.php  — Binds EventStoreInterface to PdoEventStore via DatabaseInterface
+├── EventStoreServiceProvider.php  — Binds EventStoreInterface (and GlobalEventReaderInterface, the same store) to PdoEventStore and CheckpointStoreInterface to PdoCheckpointStore, via DatabaseInterface
 ├── AppendToStreamListener.php     — ez-php/events ListenerInterface bridge; appends a dispatched DomainEvent to a resolved stream (soft dependency on ez-php/events — require-dev only)
 └── Projection/
     ├── ProjectorInterface.php     — project(StoredEvent): void contract for read-model builders
-    └── Projectionist.php          — Replays a stream's events into one or more ProjectorInterface instances
+    ├── Projectionist.php          — Replays a stream's events into one or more ProjectorInterface instances
+    ├── GlobalProjectionist.php    — run(name, projectors): every stream in global order from the projection's checkpoint, paged, at-least-once
+    ├── CheckpointStoreInterface.php — get()/save() of the last processed global position per projection name
+    ├── InMemoryCheckpointStore.php — process-local checkpoints (tests, rebuild-on-start projections)
+    └── PdoCheckpointStore.php     — event_store_checkpoints table (auto-DDL), driver-aware upsert
 
 tests/
 ├── TestCase.php                            — Base PHPUnit test case (trivial passthrough)
 ├── StoredEventTest.php                     — StoredEvent constructor/property behavior
 ├── PdoEventStoreTest.php                   — append/load/getVersion, stream isolation, concurrency conflicts
-├── PdoEventStoreMysqlTest.php              — the MySQL DDL branch (JSON/DATETIME(6)/unique key) and round-trip; skipped without DB_HOST
+├── PdoEventStoreMysqlTest.php              — the MySQL DDL branch (JSON/DATETIME(6)/unique key), round-trip, readAll() and the checkpoint upsert; skipped without DB_HOST
+├── EventStoreGlobalReadTest.php            — readAll(): cross-stream order, paging by position, upcasters, limit validation
 ├── EventStoreServiceProviderTest.php       — register() binding, resolution wiring to DatabaseInterface
 ├── AppendToStreamListenerTest.php          — handle() appends DomainEvent+EventInterface fixtures to the resolved stream; ignores events that don't implement DomainEvent
 ├── Projection/
-│   └── ProjectionistTest.php               — replay() ordering, multi-projector fan-out, fromVersion checkpoint
+│   ├── ProjectionistTest.php               — replay() ordering, multi-projector fan-out, fromVersion checkpoint
+│   └── GlobalProjectionistTest.php         — resume from checkpoint, paging/maxEvents, independent projections, at-least-once on failure, reset(), both checkpoint stores
 └── Support/
     ├── RecordedEvent.php                   — Minimal DomainEvent stub used across tests
     ├── EventStoreRacingPdo.php             — SQLite PDO that inserts a competing row before the store's INSERT (append race)
@@ -325,6 +333,7 @@ tests/
   read-model state. Stateless and unopinionated about scheduling: callers
   decide when to call `replay()` and where to persist a projector's
   checkpoint (`fromVersion`) between calls.
+- **`GlobalEventReaderInterface` / `GlobalProjectionist`** — read models that span many aggregates (all orders) follow events in global order. `PdoEventStore::readAll()` pages by the auto-increment `id`; `GlobalProjectionist::run($name, $projectors)` reads from the named projection's checkpoint (`CheckpointStoreInterface`), projects page by page and saves the checkpoint after each page. Like `Projectionist`, it does not schedule itself — call `run()` from a command, cron or worker loop.
 - **`EventStoreServiceProvider`** — binds `EventStoreInterface` lazily inside
   the binding closure. Unlike `AuditServiceProvider`, it does **not**
   swallow a missing `DatabaseInterface` binding in a try/catch — an event
@@ -385,6 +394,16 @@ tests/
   Snapshots are the separate, composed `ez-php/event-store-snapshots` module
   (its `SnapshottingLoader` calls `load($streamId, $snapshotVersion)`), not a
   change to `EventStoreInterface`.
+- **Global reads are a separate interface, not a widening of `EventStoreInterface`** — adding
+  `readAll()` to the per-stream contract would break every external implementation; a store that
+  cannot order globally simply does not implement `GlobalEventReaderInterface`. The provider binds
+  the interface to the bound `EventStoreInterface` and fails loudly when that store lacks it.
+- **Positions are assigned at insert, not at commit** — under concurrent appends a reader can see
+  id 11 while the transaction holding id 10 is still open; a checkpoint past 11 then skips 10. The
+  interface docblock says so. Single-writer appends avoid it; otherwise re-read a small overlap.
+- **Checkpoint per page, so delivery is at-least-once** — a projector that throws leaves the
+  checkpoint at the last completed page and the next `run()` repeats the page. Projectors must be
+  idempotent (upsert by id). Checkpointing per event would cost a write per event for little gain.
 
 ---
 
@@ -424,3 +443,4 @@ tests/
 | Real-time push of events to connected clients | `ez-php/broadcast` |
 | Multi-channel user notifications (mail, database, push) | `ez-php/notification` |
 | Snapshots of folded stream state | `ez-php/event-store-snapshots` |
+| Push subscriptions / a running projection daemon | Application layer — call `GlobalProjectionist::run()` on a schedule or in a worker loop |

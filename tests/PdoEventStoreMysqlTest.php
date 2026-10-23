@@ -6,6 +6,9 @@ namespace Tests;
 
 use EzPhp\EventStore\ConcurrencyException;
 use EzPhp\EventStore\PdoEventStore;
+use EzPhp\EventStore\PositionedEvent;
+use EzPhp\EventStore\Projection\PdoCheckpointStore;
+use EzPhp\EventStore\StoredEvent;
 use PDO;
 use PDOException;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -22,6 +25,9 @@ use Tests\Support\RecordedEvent;
  * before and after each test because MySQL DDL commits implicitly.
  */
 #[CoversClass(PdoEventStore::class)]
+#[CoversClass(PdoCheckpointStore::class)]
+#[UsesClass(PositionedEvent::class)]
+#[UsesClass(StoredEvent::class)]
 #[UsesClass(ConcurrencyException::class)]
 final class PdoEventStoreMysqlTest extends TestCase
 {
@@ -52,6 +58,7 @@ final class PdoEventStoreMysqlTest extends TestCase
         }
 
         $this->pdo->exec('DROP TABLE IF EXISTS event_store_events');
+        $this->pdo->exec('DROP TABLE IF EXISTS event_store_checkpoints');
         $this->store = new PdoEventStore($this->pdo);
     }
 
@@ -59,6 +66,7 @@ final class PdoEventStoreMysqlTest extends TestCase
     {
         if (isset($this->pdo)) {
             $this->pdo->exec('DROP TABLE IF EXISTS event_store_events');
+            $this->pdo->exec('DROP TABLE IF EXISTS event_store_checkpoints');
         }
     }
 
@@ -131,5 +139,25 @@ final class PdoEventStoreMysqlTest extends TestCase
             "INSERT INTO event_store_events (stream_id, version, event_type, payload, occurred_at)
              VALUES ('order-1', 1, 'order.placed', '{}', NOW(6))"
         );
+    }
+
+    public function test_read_all_and_checkpoint_upsert_on_mysql(): void
+    {
+        $store = new PdoEventStore($this->pdo);
+        $store->append('a', [new RecordedEvent('e', ['n' => 1])]);
+        $store->append('b', [new RecordedEvent('e', ['n' => 2])]);
+
+        $events = $store->readAll(0, 10);
+
+        self::assertCount(2, $events);
+        self::assertSame(['a', 'b'], [$events[0]->event->streamId, $events[1]->event->streamId]);
+        self::assertSame(1, count($store->readAll($events[0]->position, 10)));
+
+        $checkpoints = new PdoCheckpointStore($this->pdo);
+        $checkpoints->save('p', $events[0]->position);
+        $checkpoints->save('p', $events[1]->position); // second save hits ON DUPLICATE KEY UPDATE
+
+        self::assertSame($events[1]->position, $checkpoints->get('p'));
+        self::assertSame(0, $checkpoints->get('missing'));
     }
 }
